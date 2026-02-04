@@ -20,13 +20,33 @@ ARQUIVO_LOCAL = "dados_backup_local.csv"
 ARQUIVO_HISTORICO_LOCAL = "historico_local.csv"
 
 # --- CONEXÃO ---
+# --- CONEXÃO UNIVERSAL (PC + STREAMLIT CLOUD + FLY.IO) ---
 def get_google_client():
-    if not HAS_GOOGLE_LIBS or not os.path.exists("credentials.json"):
+    if not HAS_GOOGLE_LIBS:
         return None
+    
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
-    client = gspread.authorize(creds)
-    return client
+
+    # 1. TENTA FLY.IO / DOCKER (Variável de Ambiente)
+    # O Fly injeta a senha nesta variável que vamos criar
+    env_creds = os.getenv("GOOGLE_CREDENTIALS")
+    if env_creds:
+        creds_dict = json.loads(env_creds)
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        return gspread.authorize(creds)
+
+    # 2. TENTA STREAMLIT CLOUD (Secrets)
+    if "GOOGLE_CREDENTIALS" in st.secrets:
+        creds_dict = json.loads(st.secrets["GOOGLE_CREDENTIALS"])
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        return gspread.authorize(creds)
+
+    # 3. TENTA LOCAL (Arquivo no PC)
+    if os.path.exists("credentials.json"):
+        creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+        return gspread.authorize(creds)
+
+    return None
 
 # --- CARREGAR ---
 def carregar_dados():
