@@ -1,0 +1,16 @@
+# Arquivos de Sistema e Python
+__pycache__/
+*.pyc
+.DS_Store
+
+# Ambientes Virtuais
+venv/
+.venv/
+env/
+
+# ARQUIVOS SECRETOS 
+credentials.json
+.streamlit/secrets.toml
+
+# Dados Locais 
+*.csv
