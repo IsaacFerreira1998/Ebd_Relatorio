@@ -7,8 +7,7 @@ import json
 import toml
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="EBD Relatório", layout="mobile")
-
+st.set_page_config(page_title="EBD Relatório", layout="centered")
 # --- CONEXÃO COM GOOGLE SHEETS ---
 def conectar_google_sheets():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
