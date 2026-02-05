@@ -6,9 +6,9 @@ from datetime import datetime
 import json
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="EBD Jovens", layout="centered")
+st.set_page_config(page_title="EBD Gamificada", layout="centered")
 
-# --- CONEXÃO COM GOOGLE SHEETS (COM CACHE DE RECURSO) ---
+# --- CONEXÃO COM GOOGLE SHEETS (COM CACHE) ---
 @st.cache_resource
 def conectar_google_sheets():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -17,40 +17,52 @@ def conectar_google_sheets():
     client = gspread.authorize(creds)
     return client
 
-# --- ID DA SUA PLANILHA ---
+# ID DA SUA PLANILHA
 ID_PLANILHA = "137YLYAmAdg-l_TeHhRClR4dJMG4GIK8ZqeReFY157mQ"
 
-# --- FUNÇÕES DE DADOS (COM CACHE DE DADOS) ---
-@st.cache_data(ttl=60) # Guarda os dados na memória por 60 segundos
+# --- FUNÇÕES DE DADOS ---
+@st.cache_data(ttl=10) # Cache rápido para atualizar logo
 def carregar_dados():
     client = conectar_google_sheets()
     try:
-        # Abre a planilha pelo ID
         sheet = client.open_by_key(ID_PLANILHA).worksheet("Jovens")
         data = sheet.get_all_records()
         
         if not data:
-            return pd.DataFrame(columns=["Nome", "Presencas", "Participacoes", "Performance"])
+            return pd.DataFrame(columns=["Nome", "Presencas", "Participacoes", "Questionarios"])
             
         df = pd.DataFrame(data)
         
-        # --- CORREÇÃO DO BUG "NOME" ---
-        # Remove linhas onde o Nome é igual a "Nome" ou vazio
+        # --- LIMPEZA E GARANTIA DE COLUNAS ---
+        # Se a coluna Questionarios não existir (planilha velha), cria ela na memória
+        if "Questionarios" not in df.columns:
+            df["Questionarios"] = 0
+            
+        # Remove linhas de lixo (cabeçalhos repetidos ou vazios)
         df = df[df["Nome"] != "Nome"]
         df = df[df["Nome"] != ""]
         
         return df
-    except Exception as e:
-        # Se der erro (ex: aba não existe), retorna vazio pra não quebrar
-        return pd.DataFrame(columns=["Nome", "Presencas", "Participacoes", "Performance"])
+    except:
+        return pd.DataFrame(columns=["Nome", "Presencas", "Participacoes", "Questionarios"])
 
 def salvar_dados(df):
     client = conectar_google_sheets()
     sheet = client.open_by_key(ID_PLANILHA).worksheet("Jovens")
-    # Atualiza a planilha
-    sheet.update([df.columns.values.tolist()] + df.values.tolist())
-    # LIMPA O CACHE para mostrar os dados novos imediatamente
-    carregar_dados.clear()
+    
+    # Prepara os dados para salvar (garante que todas as colunas existem)
+    cols_ordem = ["Nome", "Presencas", "Participacoes", "Questionarios"]
+    
+    # Verifica se o DataFrame tem todas as colunas, se não, cria com 0
+    for col in cols_ordem:
+        if col not in df.columns:
+            df[col] = 0
+            
+    df_salvar = df[cols_ordem] # Reordena
+    
+    sheet.clear() # Limpa tudo antes de salvar para não dar erro de tamanho
+    sheet.update([df_salvar.columns.values.tolist()] + df_salvar.values.tolist())
+    carregar_dados.clear() # Limpa a memória
 
 def registrar_historico(nome, acao, data_reg):
     client = conectar_google_sheets()
@@ -64,105 +76,158 @@ def registrar_historico(nome, acao, data_reg):
     hora = datetime.now().strftime("%H:%M:%S")
     sheet_hist.append_row([data_reg, hora, "Jovens", nome, acao])
 
-# --- INTERFACE ---
-st.title("📊 EBD - Jovens 2026")
-data_hoje = datetime.now().strftime("%d/%m/%Y")
-st.write(f"📅 **{data_hoje}**")
+# --- BARRA LATERAL (CONFIGURAÇÃO DE PESOS) ---
+st.sidebar.header("⚙️ Configurar Pontos")
+st.sidebar.info("Defina quanto vale cada item no domingo:")
+peso_presenca = st.sidebar.number_input("Peso Presença:", value=70, step=5)
+peso_participacao = st.sidebar.number_input("Peso Participação:", value=20, step=5)
+peso_questionario = st.sidebar.number_input("Peso Questionário:", value=10, step=5)
 
-# Carrega os dados (Usando a memória inteligente)
+# --- INTERFACE PRINCIPAL ---
+st.title("🏆 EBD Gamificada")
+data_hoje = datetime.now().strftime("%d/%m/%Y")
+st.caption(f"📅 Data de hoje: {data_hoje}")
+
+# Carrega Dados
 df = carregar_dados()
 
 # Converte números
-cols_num = ["Presencas", "Participacoes", "Performance"]
+cols_num = ["Presencas", "Participacoes", "Questionarios"]
 for col in cols_num:
     if col in df.columns:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-# --- MÉTRICAS ---
+# CÁLCULO DO SCORE TOTAL (Mágica acontecendo aqui)
 if not df.empty:
-    total_pres = int(df["Presencas"].sum())
-    total_part = int(df["Participacoes"].sum())
-    c1, c2 = st.columns(2)
-    c1.metric("Total Presenças", total_pres)
-    c2.metric("Total Participação", total_part)
-else:
-    st.info("Conectado! Aguardando cadastros.")
-
-st.divider()
-
-# --- CADASTRAR ALUNO ---
-with st.expander("➕ Cadastrar Novo Aluno"):
-    nome_novo = st.text_input("Nome:")
-    if st.button("Salvar Aluno"):
-        if nome_novo:
-            # Verifica duplicidade
-            nomes_existentes = df["Nome"].astype(str).tolist()
-            if nome_novo in nomes_existentes:
-                st.warning("Já existe!")
-            else:
-                novo = pd.DataFrame([{"Nome": nome_novo, "Presencas": 0, "Participacoes": 0, "Performance": 0.0}])
-                df = pd.concat([df, novo], ignore_index=True)
-                salvar_dados(df)
-                registrar_historico(nome_novo, "Cadastro", data_hoje)
-                st.success("Cadastrado!")
-                st.rerun()
-
-st.divider()
-
-# --- LISTA DE CHAMADA ---
-if not df.empty:
-    # Filtra apenas nomes válidos para a lista
-    lista_nomes = df["Nome"].unique()
-    aluno = st.selectbox("Selecione o Aluno:", lista_nomes)
+    df["Total Pontos"] = (df["Presencas"] * peso_presenca) + \
+                         (df["Participacoes"] * peso_participacao) + \
+                         (df["Questionarios"] * peso_questionario)
     
-    if aluno:
-        # Encontra o índice do aluno
-        idx = df[df["Nome"] == aluno].index[0]
+    # Ordena pelo Ranking (Quem tem mais pontos fica em cima)
+    df = df.sort_values(by="Total Pontos", ascending=False).reset_index(drop=True)
+
+# --- MÉTRICAS DA CLASSE ---
+if not df.empty:
+    col1, col2 = st.columns(2)
+    col1.metric("Total Presenças", int(df["Presencas"].sum()))
+    col2.metric("Maior Pontuação", int(df["Total Pontos"].max()) if not df.empty else 0)
+else:
+    st.warning("Nenhum aluno cadastrado.")
+
+st.divider()
+
+# --- ÁREA DE LANÇAMENTO (BOTA A MÃO NA MASSA) ---
+if not df.empty:
+    lista_nomes = df["Nome"].tolist()
+    aluno_sel = st.selectbox("Selecione o Aluno para Pontuar:", lista_nomes)
+    
+    if aluno_sel:
+        idx = df[df["Nome"] == aluno_sel].index[0]
         
-        # Botões
-        c1, c2 = st.columns(2)
+        st.write(f"### 🎯 Aluno: **{aluno_sel}**")
+        
+        # COLUNAS DE AÇÃO
+        c1, c2, c3 = st.columns(3)
+        
+        # 1. PRESENÇA
         with c1:
-            st.caption("Presença")
-            if st.button("✅ Presente", key="p_add"):
+            st.info(f"**Presença ({peso_presenca} pts)**")
+            if st.button("✅ Veio", use_container_width=True):
                 df.at[idx, "Presencas"] += 1
                 salvar_dados(df)
-                registrar_historico(aluno, "Presenca", data_hoje)
+                registrar_historico(aluno_sel, "Presenca", data_hoje)
+                st.toast(f"+{peso_presenca} pontos para {aluno_sel}!")
                 st.rerun()
-                
-            if st.button("❌ Anular", key="p_rem"):
+            if st.button("🔻 Tirar P.", key="rem_pres", use_container_width=True):
                 if df.at[idx, "Presencas"] > 0:
                     df.at[idx, "Presencas"] -= 1
                     salvar_dados(df)
-                    registrar_historico(aluno, "Anulou Presenca", data_hoje)
                     st.rerun()
 
+        # 2. PARTICIPAÇÃO
         with c2:
-            st.caption("Ponto Extra")
-            if st.button("➕ Ponto", key="pt_add"):
+            st.warning(f"**Partic. ({peso_participacao} pts)**")
+            if st.button("🗣️ Falou", use_container_width=True):
                 df.at[idx, "Participacoes"] += 1
                 salvar_dados(df)
-                registrar_historico(aluno, "Ponto Extra", data_hoje)
+                registrar_historico(aluno_sel, "Participacao", data_hoje)
+                st.toast(f"+{peso_participacao} pontos!")
                 st.rerun()
-                
-            if st.button("🔻 Tirar", key="pt_rem"):
+            if st.button("🔻 Tirar F.", key="rem_part", use_container_width=True):
                 if df.at[idx, "Participacoes"] > 0:
                     df.at[idx, "Participacoes"] -= 1
                     salvar_dados(df)
-                    registrar_historico(aluno, "Anulou Ponto", data_hoje)
                     st.rerun()
 
-        # Resumo
-        st.write("---")
-        pres = df.at[idx, "Presencas"]
-        part = df.at[idx, "Participacoes"]
-        perf = round(part/pres, 1) if pres > 0 else 0.0
-        
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Presenças", pres)
-        m2.metric("Pontos", part)
-        m3.metric("Nota", perf)
+        # 3. QUESTIONÁRIO (NOVO!)
+        with c3:
+            st.success(f"**Quiz ({peso_questionario} pts)**")
+            if st.button("📝 Acertou", use_container_width=True):
+                df.at[idx, "Questionarios"] += 1
+                salvar_dados(df)
+                registrar_historico(aluno_sel, "Questionario", data_hoje)
+                st.toast(f"+{peso_questionario} pontos!")
+                st.rerun()
+            if st.button("🔻 Tirar Q.", key="rem_quest", use_container_width=True):
+                if df.at[idx, "Questionarios"] > 0:
+                    df.at[idx, "Questionarios"] -= 1
+                    salvar_dados(df)
+                    st.rerun()
 
-# --- TABELA FINAL ---
+        # RESUMO DO ALUNO
+        st.write("---")
+        pontos_aluno = df.at[idx, "Total Pontos"]
+        st.metric(label="PONTUAÇÃO TOTAL ACUMULADA", value=f"{int(pontos_aluno)} Pts")
+
+st.divider()
+
+# --- GERENCIAMENTO (CADASTRO, REMOÇÃO E DOWNLOAD) ---
+with st.expander("⚙️ Gerenciar Alunos e Planilha"):
+    tab1, tab2, tab3 = st.tabs(["Novo Aluno", "Remover Aluno", "Baixar Planilha"])
+    
+    # ABA 1: CADASTRAR
+    with tab1:
+        novo_nome = st.text_input("Nome do novo aluno:")
+        if st.button("💾 Salvar Aluno"):
+            if novo_nome and novo_nome not in df["Nome"].values:
+                novo = pd.DataFrame([{"Nome": novo_nome, "Presencas": 0, "Participacoes": 0, "Questionarios": 0}])
+                df = pd.concat([df, novo], ignore_index=True)
+                salvar_dados(df)
+                st.success("Cadastrado!")
+                st.rerun()
+            else:
+                st.error("Nome vazio ou já existe.")
+
+    # ABA 2: REMOVER (NOVO!)
+    with tab2:
+        st.error("⚠️ Cuidado: Isso apaga o aluno para sempre!")
+        if not df.empty:
+            aluno_remover = st.selectbox("Quem você quer excluir?", df["Nome"].unique())
+            if st.button("🗑️ EXCLUIR ALUNO"):
+                df = df[df["Nome"] != aluno_remover] # Filtra removendo o aluno
+                salvar_dados(df)
+                st.success(f"{aluno_remover} foi removido.")
+                st.rerun()
+        else:
+            st.info("Lista vazia.")
+
+    # ABA 3: DOWNLOAD (CORRIGIDO!)
+    with tab3:
+        st.write("Baixe a lista completa para o Excel:")
+        if not df.empty:
+            csv = df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                label="📥 Download CSV (Excel)",
+                data=csv,
+                file_name=f"relatorio_ebd_{data_hoje.replace('/','-')}.csv",
+                mime="text/csv",
+            )
+
+# --- RANKING GERAL ---
 st.write("---")
-with st.expander("Ver Planilha Completa"):
-    st.dataframe(df)
+st.subheader("🏆 Ranking da Classe")
+st.dataframe(
+    df[["Nome", "Presencas", "Participacoes", "Questionarios", "Total Pontos"]],
+    use_container_width=True,
+    hide_index=True
+)
