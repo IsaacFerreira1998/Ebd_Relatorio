@@ -8,7 +8,8 @@ import json
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="EBD Jovens", layout="centered")
 
-# --- CONEXÃO COM GOOGLE SHEETS ---
+# --- CONEXÃO COM GOOGLE SHEETS (COM CACHE DE RECURSO) ---
+@st.cache_resource
 def conectar_google_sheets():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds_dict = json.loads(st.secrets["GOOGLE_CREDENTIALS"])
@@ -16,44 +17,44 @@ def conectar_google_sheets():
     client = gspread.authorize(creds)
     return client
 
-# --- FUNÇÃO INTELIGENTE: INICIALIZAR E CARREGAR ---
-def carregar_dados(aba_nome):
-    client = conectar_google_sheets()
-    spreadsheet = client.open("Relatorio_EBD_2026")
-    
-    # Tenta abrir a aba "Jovens", se não existir, cria sozinha
-    try:
-        sheet = spreadsheet.worksheet(aba_nome)
-    except:
-        # Cria a aba se ela sumiu
-        sheet = spreadsheet.add_worksheet(title=aba_nome, rows=100, cols=20)
-        
-    # Se a aba estiver vazia (sem cabeçalho), cria o cabeçalho padrão
-    if not sheet.row_values(1):
-        cabecalhos = ["Nome", "Presencas", "Participacoes", "Performance"]
-        sheet.append_row(cabecalhos)
-        data = []
-    else:
-        data = sheet.get_all_records()
+# --- ID DA SUA PLANILHA ---
+ID_PLANILHA = "137YLYAmAdg-l_TeHhRClR4dJMG4GIK8ZqeReFY157mQ"
 
-    # Cria a Tabela no sistema
-    if not data:
-        # Tabela vazia mas com as colunas certas
-        df = pd.DataFrame(columns=["Nome", "Presencas", "Participacoes", "Performance"])
-    else:
+# --- FUNÇÕES DE DADOS (COM CACHE DE DADOS) ---
+@st.cache_data(ttl=60) # Guarda os dados na memória por 60 segundos
+def carregar_dados():
+    client = conectar_google_sheets()
+    try:
+        # Abre a planilha pelo ID
+        sheet = client.open_by_key(ID_PLANILHA).worksheet("Jovens")
+        data = sheet.get_all_records()
+        
+        if not data:
+            return pd.DataFrame(columns=["Nome", "Presencas", "Participacoes", "Performance"])
+            
         df = pd.DataFrame(data)
         
-    return df
+        # --- CORREÇÃO DO BUG "NOME" ---
+        # Remove linhas onde o Nome é igual a "Nome" ou vazio
+        df = df[df["Nome"] != "Nome"]
+        df = df[df["Nome"] != ""]
+        
+        return df
+    except Exception as e:
+        # Se der erro (ex: aba não existe), retorna vazio pra não quebrar
+        return pd.DataFrame(columns=["Nome", "Presencas", "Participacoes", "Performance"])
 
-def salvar_dados(df, aba_nome):
+def salvar_dados(df):
     client = conectar_google_sheets()
-    sheet = client.open("Relatorio_EBD_2026").worksheet(aba_nome)
-    # Atualiza a planilha inteira
+    sheet = client.open_by_key(ID_PLANILHA).worksheet("Jovens")
+    # Atualiza a planilha
     sheet.update([df.columns.values.tolist()] + df.values.tolist())
+    # LIMPA O CACHE para mostrar os dados novos imediatamente
+    carregar_dados.clear()
 
-def registrar_historico(nome, acao, data):
+def registrar_historico(nome, acao, data_reg):
     client = conectar_google_sheets()
-    spreadsheet = client.open("Relatorio_EBD_2026")
+    spreadsheet = client.open_by_key(ID_PLANILHA)
     try:
         sheet_hist = spreadsheet.worksheet("Historico")
     except:
@@ -61,148 +62,107 @@ def registrar_historico(nome, acao, data):
         sheet_hist.append_row(["Data", "Hora", "Classe", "Nome", "Acao"])
         
     hora = datetime.now().strftime("%H:%M:%S")
-    linha = [data, hora, "Jovens", nome, acao]
-    sheet_hist.append_row(linha)
+    sheet_hist.append_row([data_reg, hora, "Jovens", nome, acao])
 
-# --- INTERFACE GRÁFICA ---
+# --- INTERFACE ---
 st.title("📊 EBD - Jovens 2026")
-
-# CONFIGURAÇÃO FIXA (SÓ JOVENS)
-modo_atual = "Jovens"
 data_hoje = datetime.now().strftime("%d/%m/%Y")
-st.write(f"📅 Data: **{data_hoje}**")
+st.write(f"📅 **{data_hoje}**")
 
-# CARREGAR DADOS
-try:
-    df = carregar_dados(modo_atual)
-    
-    # Garantir que os números sejam lidos como números
-    cols_num = ["Presencas", "Participacoes", "Performance"]
-    for col in cols_num:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+# Carrega os dados (Usando a memória inteligente)
+df = carregar_dados()
 
-    # --- MÉTRICAS GERAIS ---
-    if not df.empty:
-        total_presencas = int(df["Presencas"].sum())
-        total_participacao = int(df["Participacoes"].sum())
-        col_m1, col_m2 = st.columns(2)
-        col_m1.metric("Total Presenças", total_presencas)
-        col_m2.metric("Total Participações", total_participacao)
-    else:
-        st.info("Nenhum aluno cadastrado ainda. Use o botão abaixo.")
+# Converte números
+cols_num = ["Presencas", "Participacoes", "Performance"]
+for col in cols_num:
+    if col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-    st.divider()
+# --- MÉTRICAS ---
+if not df.empty:
+    total_pres = int(df["Presencas"].sum())
+    total_part = int(df["Participacoes"].sum())
+    c1, c2 = st.columns(2)
+    c1.metric("Total Presenças", total_pres)
+    c2.metric("Total Participação", total_part)
+else:
+    st.info("Conectado! Aguardando cadastros.")
 
-    # --- ÁREA DE CADASTRO (IMPORTANTE PARA COMEÇAR) ---
-    with st.expander("➕ Cadastrar Novo Aluno"):
-        novo_nome = st.text_input("Nome do Aluno:")
-        if st.button("Salvar Novo Aluno"):
-            if novo_nome:
-                # Verifica se já existe para não duplicar
-                if not df.empty and novo_nome in df["Nome"].values:
-                    st.warning("Esse nome já existe na lista!")
-                else:
-                    # Cria a nova linha
-                    novo_registro = pd.DataFrame([{"Nome": novo_nome, "Presencas": 0, "Participacoes": 0, "Performance": 0.0}])
-                    # Junta com a tabela antiga
-                    df = pd.concat([df, novo_registro], ignore_index=True)
-                    salvar_dados(df, modo_atual)
-                    registrar_historico(novo_nome, "Cadastro", data_hoje)
-                    st.success(f"{novo_nome} cadastrado com sucesso!")
-                    st.rerun()
+st.divider()
+
+# --- CADASTRAR ALUNO ---
+with st.expander("➕ Cadastrar Novo Aluno"):
+    nome_novo = st.text_input("Nome:")
+    if st.button("Salvar Aluno"):
+        if nome_novo:
+            # Verifica duplicidade
+            nomes_existentes = df["Nome"].astype(str).tolist()
+            if nome_novo in nomes_existentes:
+                st.warning("Já existe!")
             else:
-                st.warning("Digite um nome!")
+                novo = pd.DataFrame([{"Nome": nome_novo, "Presencas": 0, "Participacoes": 0, "Performance": 0.0}])
+                df = pd.concat([df, novo], ignore_index=True)
+                salvar_dados(df)
+                registrar_historico(nome_novo, "Cadastro", data_hoje)
+                st.success("Cadastrado!")
+                st.rerun()
 
-    st.divider()
+st.divider()
 
-    # --- LISTA E AÇÕES ---
-    if not df.empty:
-        lista_alunos = df["Nome"].tolist()
-        aluno_sel = st.selectbox("Selecione o Aluno:", lista_alunos)
-
-        if aluno_sel:
-            # Pega dados atuais do aluno
-            idx = df[df["Nome"] == aluno_sel].index[0]
-            val_presenca = int(df.at[idx, "Presencas"])
-            val_partic = int(df.at[idx, "Participacoes"])
-            val_perf = df.at[idx, "Performance"]
-
-            st.write(f"### 👤 {aluno_sel}")
-            
-            # --- BOTÕES DE PRESENÇA ---
-            st.caption("Controle de Presença")
-            c1, c2 = st.columns(2)
-            with c1:
-                if st.button("✅ Marcar Presença", use_container_width=True):
-                    df.at[idx, "Presencas"] += 1
-                    # Recalcula Performance
-                    p, part = df.at[idx, "Presencas"], df.at[idx, "Participacoes"]
-                    df.at[idx, "Performance"] = round(part/p, 1) if p > 0 else 0.0
-                    
-                    salvar_dados(df, modo_atual)
-                    registrar_historico(aluno_sel, "Presenca", data_hoje)
-                    st.toast("Presença Confirmada!")
+# --- LISTA DE CHAMADA ---
+if not df.empty:
+    # Filtra apenas nomes válidos para a lista
+    lista_nomes = df["Nome"].unique()
+    aluno = st.selectbox("Selecione o Aluno:", lista_nomes)
+    
+    if aluno:
+        # Encontra o índice do aluno
+        idx = df[df["Nome"] == aluno].index[0]
+        
+        # Botões
+        c1, c2 = st.columns(2)
+        with c1:
+            st.caption("Presença")
+            if st.button("✅ Presente", key="p_add"):
+                df.at[idx, "Presencas"] += 1
+                salvar_dados(df)
+                registrar_historico(aluno, "Presenca", data_hoje)
+                st.rerun()
+                
+            if st.button("❌ Anular", key="p_rem"):
+                if df.at[idx, "Presencas"] > 0:
+                    df.at[idx, "Presencas"] -= 1
+                    salvar_dados(df)
+                    registrar_historico(aluno, "Anulou Presenca", data_hoje)
                     st.rerun()
-            
-            with c2:
-                if st.button("❌ Anular Presença", use_container_width=True):
-                    if val_presenca > 0:
-                        df.at[idx, "Presencas"] -= 1
-                        # Recalcula Performance
-                        p, part = df.at[idx, "Presencas"], df.at[idx, "Participacoes"]
-                        df.at[idx, "Performance"] = round(part/p, 1) if p > 0 else 0.0
-                        
-                        salvar_dados(df, modo_atual)
-                        registrar_historico(aluno_sel, "ANULADO - Presenca", data_hoje)
-                        st.toast("Presença Removida!")
-                        st.rerun()
-                    else:
-                        st.warning("Já está zero!")
 
-            # --- BOTÕES DE PONTOS ---
-            st.caption("Participação")
-            c3, c4 = st.columns(2)
-            with c3:
-                if st.button("➕ Ponto Extra", use_container_width=True):
-                    df.at[idx, "Participacoes"] += 1
-                    # Recalcula Performance
-                    p, part = df.at[idx, "Presencas"], df.at[idx, "Participacoes"]
-                    df.at[idx, "Performance"] = round(part/p, 1) if p > 0 else 0.0
-                    
-                    salvar_dados(df, modo_atual)
-                    registrar_historico(aluno_sel, "Ponto Extra", data_hoje)
-                    st.toast("Ponto Adicionado!")
+        with c2:
+            st.caption("Ponto Extra")
+            if st.button("➕ Ponto", key="pt_add"):
+                df.at[idx, "Participacoes"] += 1
+                salvar_dados(df)
+                registrar_historico(aluno, "Ponto Extra", data_hoje)
+                st.rerun()
+                
+            if st.button("🔻 Tirar", key="pt_rem"):
+                if df.at[idx, "Participacoes"] > 0:
+                    df.at[idx, "Participacoes"] -= 1
+                    salvar_dados(df)
+                    registrar_historico(aluno, "Anulou Ponto", data_hoje)
                     st.rerun()
-            
-            with c4:
-                if st.button("🔻 Tirar Ponto", use_container_width=True):
-                    if val_partic > 0:
-                        df.at[idx, "Participacoes"] -= 1
-                        # Recalcula Performance
-                        p, part = df.at[idx, "Presencas"], df.at[idx, "Participacoes"]
-                        df.at[idx, "Performance"] = round(part/p, 1) if p > 0 else 0.0
-                        
-                        salvar_dados(df, modo_atual)
-                        registrar_historico(aluno_sel, "ANULADO - Ponto", data_hoje)
-                        st.toast("Ponto Removido!")
-                        st.rerun()
-                    else:
-                        st.warning("Já está zero!")
 
-            # --- TABELA DE RESUMO ---
-            st.write("---")
-            st.write(f"**Resumo: {aluno_sel}**")
-            col_res1, col_res2, col_res3 = st.columns(3)
-            col_res1.metric("Presenças", val_presenca)
-            col_res2.metric("Pontos", val_partic)
-            col_res3.metric("Nota", val_perf)
+        # Resumo
+        st.write("---")
+        pres = df.at[idx, "Presencas"]
+        part = df.at[idx, "Participacoes"]
+        perf = round(part/pres, 1) if pres > 0 else 0.0
+        
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Presenças", pres)
+        m2.metric("Pontos", part)
+        m3.metric("Nota", perf)
 
-    # --- TABELA GERAL NO FINAL ---
-    st.divider()
-    with st.expander("Ver Tabela Completa"):
-        st.dataframe(df)
-
-except Exception as e:
-    st.error(f"Erro no sistema: {e}")
-    st.write("Dica: Verifique a conexão com a internet ou as permissões da planilha.")
+# --- TABELA FINAL ---
+st.write("---")
+with st.expander("Ver Planilha Completa"):
+    st.dataframe(df)
