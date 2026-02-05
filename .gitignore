@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 .DS_Store
+.github
 
 # Ambientes Virtuais
 venv/
@@ -9,8 +10,15 @@ venv/
 env/
 
 # ARQUIVOS SECRETOS 
-credentials.json
-.streamlit/secrets.toml
+cred.json
+.streamlit
+
+# Arquivos locais
+.dockerignore
+docker-compose.yml
+Dockerfile
+.gitignore
+fly.toml
 
 # Dados Locais 
 *.csv

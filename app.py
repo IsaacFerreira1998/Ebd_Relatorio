@@ -4,18 +4,45 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 import json
+import os
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="EBD Gamificada", layout="centered")
 
-# --- CONEXÃO COM GOOGLE SHEETS (COM CACHE) ---
+# --- CONEXÃO COM GOOGLE SHEETS (COM CACHE) --- 
+# --- ATENÇÃO --- O deploy só funcionou pq eu tirei "st.secrets" e coloquei os "os"| O "os" funciona pq executa antes do app
 @st.cache_resource
 def conectar_google_sheets():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds_dict = json.loads(st.secrets["GOOGLE_CREDENTIALS"])
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-    client = gspread.authorize(creds)
-    return client
+    
+    # Busca a credencial diretamente no os (Mais seguro para Nuvem segundo gemini) O Fly.io injeta o segredo aqui.
+    raw_creds = os.environ.get("GOOGLE_CREDENTIALS")
+    
+    # Se não encontrar no Sistema (Fly), tenta no Streamlit (Local)
+    if not raw_creds:
+        try:
+            # Aqui o .get para não dar erro se o arquivo não existir
+            raw_creds = st.secrets.get("GOOGLE_CREDENTIALS")
+        except:
+            raw_creds = None
+
+    # Se ainda assim for vazio, para o app com erro explicativo
+    if not raw_creds:
+        st.error("❌ Credenciais não encontradas!")
+        st.info("No Fly.io, verifique se executou: fly secrets set GOOGLE_CREDENTIALS='...' ")
+        st.stop()
+
+    # Processa a credencial (seja string ou dicionário)
+    try:
+        if isinstance(raw_creds, str):
+            creds_dict = json.loads(raw_creds)
+        else:
+            creds_dict = dict(raw_creds)
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        return gspread.authorize(creds)
+    except Exception as e:
+        st.error(f"Erro ao processar JSON: {e}")
+        st.stop()
 
 # ID DA SUA PLANILHA
 ID_PLANILHA = "137YLYAmAdg-l_TeHhRClR4dJMG4GIK8ZqeReFY157mQ"
